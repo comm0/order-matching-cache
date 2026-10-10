@@ -23,4 +23,3 @@ if errorlevel 1 (
 )
 
 echo Solution generated: vs\order_cache.sln
-pause
