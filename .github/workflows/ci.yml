@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  linux:
-    name: linux-${{ matrix.compiler }}
+  build_and_test:
+    name: build-and-test-${{ matrix.compiler }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -35,4 +35,48 @@ jobs:
         run: cmake --build build
 
       - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizer:
+    name: sanitizer-${{ matrix.sanitizer }}
+    needs: build_and_test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: address
+            flags: -fsanitize=address
+          - sanitizer: undefined
+            flags: -fsanitize=undefined -fno-sanitize-recover=all
+          - sanitizer: thread
+            flags: -fsanitize=thread
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libgtest-dev
+
+      # Sanitizer runtimes of clang 18 fail with the high ASLR entropy of the runner kernel.
+      - name: Reduce ASLR entropy
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_CXX_FLAGS="-g -fno-omit-frame-pointer ${{ matrix.flags }}"
+          -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1
         run: ctest --test-dir build --output-on-failure
