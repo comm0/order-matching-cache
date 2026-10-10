@@ -429,6 +429,99 @@ TEST_F(matching_test_t, matching_saturates_instead_of_overflowing)
   EXPECT_EQ(cache_.get_matching_size_for_security("Security1"), maximum);
 }
 
+std::uint64_t maximum_flow(
+    std::vector<std::vector<std::uint64_t>> capacity_p,
+    std::size_t source_p,
+    std::size_t sink_p)
+{
+  const std::size_t node_count = capacity_p.size();
+  std::uint64_t total_flow = 0;
+  while (true) {
+    std::vector<std::size_t> parent(node_count, node_count);
+    parent[source_p] = source_p;
+    std::vector<std::size_t> queue{source_p};
+    for (std::size_t head = 0; head < queue.size() && parent[sink_p] == node_count; ++head) {
+      for (std::size_t next = 0; next < node_count; ++next) {
+        if (parent[next] == node_count && capacity_p[queue[head]][next] > 0) {
+          parent[next] = queue[head];
+          queue.push_back(next);
+        }
+      }
+    }
+    if (parent[sink_p] == node_count) {
+      return total_flow;
+    }
+
+    std::uint64_t path_flow = std::numeric_limits<std::uint64_t>::max();
+    for (std::size_t node = sink_p; node != source_p; node = parent[node]) {
+      path_flow = std::min(path_flow, capacity_p[parent[node]][node]);
+    }
+    for (std::size_t node = sink_p; node != source_p; node = parent[node]) {
+      capacity_p[parent[node]][node] -= path_flow;
+      capacity_p[node][parent[node]] += path_flow;
+    }
+    total_flow += path_flow;
+  }
+}
+
+// Max flow over single orders: source -> buys -> sells of other companies -> sink.
+std::uint64_t brute_force_matching(const std::vector<order_t>& orders_p)
+{
+  const std::size_t source = orders_p.size();
+  const std::size_t sink = source + 1;
+  std::vector<std::vector<std::uint64_t>> capacity(sink + 1, std::vector<std::uint64_t>(sink + 1, 0));
+
+  for (std::size_t buy = 0; buy < orders_p.size(); ++buy) {
+    if (orders_p[buy].side() == "Sell") {
+      capacity[buy][sink] = orders_p[buy].quantity();
+      continue;
+    }
+    capacity[source][buy] = orders_p[buy].quantity();
+    for (std::size_t sell = 0; sell < orders_p.size(); ++sell) {
+      if (orders_p[sell].side() == "Sell" && orders_p[sell].company() != orders_p[buy].company()) {
+        capacity[buy][sell] = std::numeric_limits<std::uint32_t>::max();
+      }
+    }
+  }
+  return maximum_flow(capacity, source, sink);
+}
+
+TEST_F(matching_test_t, matching_equals_brute_force_maximum_flow_on_random_orders)
+{
+  std::mt19937 random_engine(2026);
+  std::uniform_int_distribution<std::size_t> order_count_distribution(1, 10);
+  std::uniform_int_distribution<int> company_distribution(0, 3);
+  std::uniform_int_distribution<unsigned int> quantity_distribution(1, 20);
+  std::bernoulli_distribution coin;
+
+  for (int iteration = 0; iteration < 500; ++iteration) {
+    order_cache_t cache;
+    std::vector<order_t> orders;
+    const std::size_t order_count = order_count_distribution(random_engine);
+    for (std::size_t index = 0; index < order_count; ++index) {
+      orders.emplace_back(
+          "Order" + std::to_string(index),
+          "Security1",
+          coin(random_engine) ? "Buy" : "Sell",
+          quantity_distribution(random_engine),
+          "User" + std::to_string(index),
+          "Company" + std::to_string(company_distribution(random_engine)));
+      cache.add_order(orders.back());
+    }
+    ASSERT_EQ(cache.get_matching_size_for_security("Security1"), brute_force_matching(orders)) << "iteration " << iteration;
+
+    std::vector<order_t> remaining;
+    for (const order_t& order : orders) {
+      if (coin(random_engine)) {
+        remaining.push_back(order);
+      } else {
+        cache.cancel_order(order.order_id());
+      }
+    }
+    ASSERT_EQ(cache.get_matching_size_for_security("Security1"), brute_force_matching(remaining)) << "iteration " << iteration;
+  }
+}
+
 struct matching_reference_t
 {
   std::uint64_t buy_total_ = 0;

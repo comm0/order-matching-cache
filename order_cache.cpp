@@ -53,12 +53,8 @@ void order_cache_t::cancel_order(const std::string& order_id_p)
 void order_cache_t::cancel_orders_for_user(const std::string& user_p)
 {
   std::unique_lock<std::shared_mutex> lock(mutex_);
-  const auto* order_ids = user_index_.find(user_p);
-  if (order_ids == nullptr) {
-    return;
-  }
-
-  const std::vector<std::string> order_ids_to_remove(order_ids->begin(), order_ids->end());
+  const auto& order_ids = user_index_.find(user_p);
+  const std::vector<std::string> order_ids_to_remove(order_ids.begin(), order_ids.end());
   for (const std::string& order_id : order_ids_to_remove) {
     remove_order(order_id);
   }

@@ -112,13 +112,11 @@ class order_cache_t : public order_cache_interface_t
       }
     }
 
-    const std::unordered_set<std::string>* find(const key_t& key_p) const
+    const std::unordered_set<std::string>& find(const key_t& key_p) const
     {
-      auto key_iterator = index_.find(key_p);
-      if (key_iterator == index_.end()) {
-        return nullptr;
-      }
-      return &key_iterator->second;
+      static const std::unordered_set<std::string> empty_set;
+      const auto key_iterator = index_.find(key_p);
+      return key_iterator == index_.end() ? empty_set : key_iterator->second;
     }
 
    private:
