@@ -1,6 +1,8 @@
 #include "order_cache.h"
 
+#include <algorithm>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 
 void order_cache_t::add_order(order_t order_p)
@@ -84,9 +86,24 @@ void order_cache_t::cancel_orders_for_security_with_minimum_quantity(
   }
 }
 
-unsigned int order_cache_t::get_matching_size_for_security(const std::string&)
+unsigned int order_cache_t::get_matching_size_for_security(const std::string& security_id_p)
 {
-  return 0;
+  const auto security_iterator = securities_.find(security_id_p);
+  if (security_iterator == securities_.end()) {
+    return 0;
+  }
+
+  const security_book_t& security_book = security_iterator->second;
+  const std::uint64_t largest_company_total = *security_book.company_totals_.rbegin();
+
+  // Each matched unit involves two distinct companies, so at least one side comes from outside the largest one.
+  const std::uint64_t matched = std::min({
+      security_book.buy_total_,
+      security_book.sell_total_,
+      security_book.buy_total_ + security_book.sell_total_ - largest_company_total});
+
+  return static_cast<unsigned int>(
+      std::min<std::uint64_t>(matched, std::numeric_limits<unsigned int>::max()));
 }
 
 std::vector<order_t> order_cache_t::get_all_orders() const

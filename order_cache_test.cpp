@@ -1,3 +1,4 @@
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -239,6 +240,138 @@ TEST_F(order_cache_test_t, cancel_orders_for_unknown_security_is_no_op)
 
   EXPECT_NO_THROW(cache_.cancel_orders_for_security_with_minimum_quantity("MissingSecurity", 0));
   expect_orders_equal(cache_.get_all_orders(), {order});
+}
+
+struct matching_scenario_t
+{
+  std::string name_;
+  std::vector<order_t> orders_;
+  std::vector<std::pair<std::string, unsigned int>> expected_matching_;
+};
+
+class matching_test_t
+    : public order_cache_test_t,
+      public ::testing::WithParamInterface<matching_scenario_t>
+{
+};
+
+std::vector<matching_scenario_t> matching_scenarios()
+{
+  return {
+      {"scenario_1",
+       {{"Order1", "BondA", "Buy", 7000, "Trader1", "FirmA"},
+        {"Order2", "BondB", "Sell", 21000, "Trader2", "FirmB"},
+        {"Order3", "BondA", "Sell", 3500, "Trader3", "FirmA"},
+        {"Order4", "BondB", "Buy", 4200, "Trader4", "FirmC"},
+        {"Order5", "BondB", "Buy", 700, "Trader5", "FirmB"},
+        {"Order6", "BondC", "Buy", 7000, "Trader6", "FirmD"},
+        {"Order7", "BondB", "Buy", 14000, "Trader7", "FirmE"},
+        {"Order8", "BondB", "Sell", 35000, "Trader8", "FirmE"}},
+       {{"BondA", 0}, {"BondB", 18900}, {"BondC", 0}}},
+      {"scenario_2",
+       {{"Order1", "BondA", "Sell", 700, "Trader10", "Firm2"},
+        {"Order2", "BondC", "Sell", 1400, "Trader8", "Firm2"},
+        {"Order3", "BondA", "Buy", 2100, "Trader13", "Firm2"},
+        {"Order4", "BondB", "Sell", 2800, "Trader12", "Firm2"},
+        {"Order5", "BondC", "Sell", 3500, "Trader7", "Firm2"},
+        {"Order6", "BondC", "Buy", 4200, "Trader3", "Firm1"},
+        {"Order7", "BondA", "Sell", 4900, "Trader10", "Firm2"},
+        {"Order8", "BondA", "Sell", 5600, "Trader2", "Firm1"},
+        {"Order9", "BondB", "Buy", 6300, "Trader6", "Firm2"},
+        {"Order10", "BondB", "Sell", 7000, "Trader5", "Firm1"},
+        {"Order11", "BondA", "Sell", 7700, "Trader13", "Firm2"},
+        {"Order12", "BondB", "Buy", 8400, "Trader9", "Firm2"},
+        {"Order13", "BondA", "Sell", 9100, "Trader1", "Firm1"}},
+       {{"BondA", 2100}, {"BondB", 7000}, {"BondC", 4200}}},
+      {"scenario_3",
+       {{"Order1", "BondC", "Sell", 700, "Trader1", "Firm1"},
+        {"Order2", "BondC", "Sell", 1400, "Trader3", "Firm2"},
+        {"Order3", "BondA", "Buy", 2100, "Trader2", "Firm1"},
+        {"Order4", "BondC", "Sell", 2800, "Trader5", "Firm2"},
+        {"Order5", "BondB", "Sell", 3500, "Trader2", "Firm1"},
+        {"Order6", "BondB", "Buy", 4200, "Trader3", "Firm2"},
+        {"Order7", "BondB", "Sell", 4900, "Trader1", "Firm1"},
+        {"Order8", "BondA", "Sell", 5600, "Trader2", "Firm1"},
+        {"Order9", "BondA", "Buy", 6300, "Trader5", "Firm2"},
+        {"Order10", "BondA", "Sell", 7000, "Trader1", "Firm1"},
+        {"Order11", "BondB", "Sell", 7700, "Trader6", "Firm2"}},
+       {{"BondA", 6300}, {"BondB", 4200}, {"BondC", 0}}},
+      {"order_dependent_greedy_trap",
+       {{"Order1", "Security1", "Buy", 100, "User1", "CompanyA"},
+        {"Order2", "Security1", "Buy", 100, "User2", "CompanyB"},
+        {"Order3", "Security1", "Sell", 100, "User3", "CompanyC"},
+        {"Order4", "Security1", "Sell", 100, "User4", "CompanyB"}},
+       {{"Security1", 200}}},
+      {"one_buy_split_across_sells",
+       {{"Order1", "Security1", "Buy", 1000, "User1", "CompanyA"},
+        {"Order2", "Security1", "Sell", 300, "User2", "CompanyB"},
+        {"Order3", "Security1", "Sell", 400, "User3", "CompanyC"}},
+       {{"Security1", 700}}},
+      {"same_company_never_matches",
+       {{"Order1", "Security1", "Buy", 100, "User1", "CompanyA"},
+        {"Order2", "Security1", "Sell", 100, "User2", "CompanyA"}},
+       {{"Security1", 0}}},
+      {"only_one_side",
+       {{"Order1", "Security1", "Buy", 100, "User1", "CompanyA"},
+        {"Order2", "Security1", "Buy", 100, "User2", "CompanyB"}},
+       {{"Security1", 0}}},
+      {"unknown_security",
+       {{"Order1", "Security1", "Buy", 100, "User1", "CompanyA"}},
+       {{"MissingSecurity", 0}}}};
+}
+
+std::string matching_scenario_name(
+    const ::testing::TestParamInfo<matching_scenario_t>& parameter_info_p)
+{
+  return parameter_info_p.param.name_;
+}
+
+TEST_P(matching_test_t, matching_size_equals_expected)
+{
+  for (const order_t& order : GetParam().orders_) {
+    cache_.add_order(order);
+  }
+
+  for (const auto& [security_id, expected] : GetParam().expected_matching_) {
+    EXPECT_EQ(cache_.get_matching_size_for_security(security_id), expected) << security_id;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    matching_scenarios,
+    matching_test_t,
+    ::testing::ValuesIn(matching_scenarios()),
+    matching_scenario_name);
+
+TEST_F(order_cache_test_t, matching_follows_cancellations)
+{
+  cache_.add_order(order_t{"Order1", "Security1", "Buy", 500, "User1", "CompanyA"});
+  cache_.add_order(order_t{"Order2", "Security1", "Sell", 300, "User2", "CompanyB"});
+  cache_.add_order(order_t{"Order3", "Security1", "Sell", 400, "User3", "CompanyC"});
+  EXPECT_EQ(cache_.get_matching_size_for_security("Security1"), 500u);
+
+  cache_.cancel_order("Order3");
+  EXPECT_EQ(cache_.get_matching_size_for_security("Security1"), 300u);
+
+  cache_.cancel_orders_for_user("User2");
+  EXPECT_EQ(cache_.get_matching_size_for_security("Security1"), 0u);
+
+  cache_.add_order(order_t{"Order4", "Security1", "Sell", 200, "User4", "CompanyD"});
+  EXPECT_EQ(cache_.get_matching_size_for_security("Security1"), 200u);
+
+  cache_.cancel_orders_for_security_with_minimum_quantity("Security1", 500);
+  EXPECT_EQ(cache_.get_matching_size_for_security("Security1"), 0u);
+}
+
+TEST_F(order_cache_test_t, matching_saturates_instead_of_overflowing)
+{
+  const unsigned int maximum = std::numeric_limits<unsigned int>::max();
+  cache_.add_order(order_t{"Order1", "Security1", "Buy", maximum, "User1", "CompanyA"});
+  cache_.add_order(order_t{"Order2", "Security1", "Buy", maximum, "User2", "CompanyB"});
+  cache_.add_order(order_t{"Order3", "Security1", "Sell", maximum, "User3", "CompanyC"});
+  cache_.add_order(order_t{"Order4", "Security1", "Sell", maximum, "User4", "CompanyD"});
+
+  EXPECT_EQ(cache_.get_matching_size_for_security("Security1"), maximum);
 }
 
 }
