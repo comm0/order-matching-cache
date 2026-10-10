@@ -72,6 +72,22 @@ class order_cache_test_t : public ::testing::Test
   order_cache_t cache_;
 };
 
+class storage_test_t : public order_cache_test_t
+{
+};
+
+class validation_test_t : public order_cache_test_t
+{
+};
+
+class cancellation_test_t : public order_cache_test_t
+{
+};
+
+class matching_test_t : public order_cache_test_t
+{
+};
+
 struct invalid_order_case_t
 {
   std::string name_;
@@ -103,12 +119,12 @@ std::string invalid_order_name(
   return parameter_info_p.param.name_;
 }
 
-TEST_F(order_cache_test_t, get_all_orders_returns_empty_cache)
+TEST_F(storage_test_t, get_all_orders_returns_empty_cache)
 {
   EXPECT_TRUE(cache_.get_all_orders().empty());
 }
 
-TEST_F(order_cache_test_t, add_order_returns_one_matching_order)
+TEST_F(storage_test_t, add_order_returns_one_matching_order)
 {
   const order_t order{"Order1", "Security1", "Buy", 100, "User1", "Company1"};
   cache_.add_order(order);
@@ -116,7 +132,7 @@ TEST_F(order_cache_test_t, add_order_returns_one_matching_order)
   expect_orders_equal(cache_.get_all_orders(), {order});
 }
 
-TEST_F(order_cache_test_t, add_order_returns_several_matching_orders)
+TEST_F(storage_test_t, add_order_returns_several_matching_orders)
 {
   const std::vector<order_t> orders{
       {"Order1", "Security1", "Buy", 100, "User1", "Company1"},
@@ -137,12 +153,12 @@ TEST_P(invalid_order_test_t, add_order_rejects_invalid_order_without_change)
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    invalid_orders,
+    validation,
     invalid_order_test_t,
     ::testing::ValuesIn(invalid_orders()),
     invalid_order_name);
 
-TEST_F(order_cache_test_t, duplicate_id_is_rejected_and_id_can_be_reused_after_cancel)
+TEST_F(validation_test_t, duplicate_id_is_rejected_and_id_can_be_reused_after_cancel)
 {
   const order_t original{"Order1", "Security1", "Buy", 100, "User1", "Company1"};
   cache_.add_order(original);
@@ -155,7 +171,7 @@ TEST_F(order_cache_test_t, duplicate_id_is_rejected_and_id_can_be_reused_after_c
   expect_orders_equal(cache_.get_all_orders(), {replacement});
 }
 
-TEST_F(order_cache_test_t, cancel_order_removes_existing_order_and_is_idempotent)
+TEST_F(cancellation_test_t, cancel_order_removes_existing_order_and_is_idempotent)
 {
   const order_t kept{"Order1", "Security1", "Buy", 100, "User1", "Company1"};
   const order_t removed{"Order2", "Security1", "Sell", 200, "User2", "Company2"};
@@ -169,7 +185,7 @@ TEST_F(order_cache_test_t, cancel_order_removes_existing_order_and_is_idempotent
   expect_orders_equal(cache_.get_all_orders(), {kept});
 }
 
-TEST_F(order_cache_test_t, cancel_order_unknown_id_is_no_op)
+TEST_F(cancellation_test_t, cancel_order_unknown_id_is_no_op)
 {
   const order_t order{"Order1", "Security1", "Buy", 100, "User1", "Company1"};
   cache_.add_order(order);
@@ -178,7 +194,7 @@ TEST_F(order_cache_test_t, cancel_order_unknown_id_is_no_op)
   expect_orders_equal(cache_.get_all_orders(), {order});
 }
 
-TEST_F(order_cache_test_t, cancel_orders_for_user_removes_only_that_users_orders_across_securities)
+TEST_F(cancellation_test_t, cancel_orders_for_user_removes_only_that_users_orders_across_securities)
 {
   const order_t removed_first{"Order1", "Security1", "Buy", 100, "User1", "Company1"};
   const order_t kept_first{"Order2", "Security1", "Sell", 200, "User2", "Company2"};
@@ -194,7 +210,7 @@ TEST_F(order_cache_test_t, cancel_orders_for_user_removes_only_that_users_orders
   expect_orders_equal(cache_.get_all_orders(), {kept_first, kept_second});
 }
 
-TEST_F(order_cache_test_t, cancel_orders_for_unknown_user_is_no_op)
+TEST_F(cancellation_test_t, cancel_orders_for_unknown_user_is_no_op)
 {
   const order_t order{"Order1", "Security1", "Buy", 100, "User1", "Company1"};
   cache_.add_order(order);
@@ -203,7 +219,7 @@ TEST_F(order_cache_test_t, cancel_orders_for_unknown_user_is_no_op)
   expect_orders_equal(cache_.get_all_orders(), {order});
 }
 
-TEST_F(order_cache_test_t, cancel_orders_for_security_obeys_minimum_quantity_boundary)
+TEST_F(cancellation_test_t, cancel_orders_for_security_obeys_minimum_quantity_boundary)
 {
   const order_t below_boundary{"Order1", "Security1", "Buy", 99, "User1", "Company1"};
   const order_t at_boundary{"Order2", "Security1", "Sell", 100, "User2", "Company2"};
@@ -219,7 +235,7 @@ TEST_F(order_cache_test_t, cancel_orders_for_security_obeys_minimum_quantity_bou
   expect_orders_equal(cache_.get_all_orders(), {below_boundary, other_security});
 }
 
-TEST_F(order_cache_test_t, cancel_orders_for_security_with_zero_minimum_removes_all_for_security)
+TEST_F(cancellation_test_t, cancel_orders_for_security_with_zero_minimum_removes_all_for_security)
 {
   const order_t removed_first{"Order1", "Security1", "Buy", 1, "User1", "Company1"};
   const order_t removed_second{"Order2", "Security1", "Sell", 200, "User2", "Company2"};
@@ -233,7 +249,7 @@ TEST_F(order_cache_test_t, cancel_orders_for_security_with_zero_minimum_removes_
   expect_orders_equal(cache_.get_all_orders(), {kept});
 }
 
-TEST_F(order_cache_test_t, cancel_orders_for_unknown_security_is_no_op)
+TEST_F(cancellation_test_t, cancel_orders_for_unknown_security_is_no_op)
 {
   const order_t order{"Order1", "Security1", "Buy", 100, "User1", "Company1"};
   cache_.add_order(order);
@@ -249,7 +265,7 @@ struct matching_scenario_t
   std::vector<std::pair<std::string, unsigned int>> expected_matching_;
 };
 
-class matching_test_t
+class matching_scenario_test_t
     : public order_cache_test_t,
       public ::testing::WithParamInterface<matching_scenario_t>
 {
@@ -326,7 +342,7 @@ std::string matching_scenario_name(
   return parameter_info_p.param.name_;
 }
 
-TEST_P(matching_test_t, matching_size_equals_expected)
+TEST_P(matching_scenario_test_t, matching_size_equals_expected)
 {
   for (const order_t& order : GetParam().orders_) {
     cache_.add_order(order);
@@ -338,12 +354,12 @@ TEST_P(matching_test_t, matching_size_equals_expected)
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    matching_scenarios,
-    matching_test_t,
+    matching,
+    matching_scenario_test_t,
     ::testing::ValuesIn(matching_scenarios()),
     matching_scenario_name);
 
-TEST_F(order_cache_test_t, matching_follows_cancellations)
+TEST_F(matching_test_t, matching_follows_cancellations)
 {
   cache_.add_order(order_t{"Order1", "Security1", "Buy", 500, "User1", "CompanyA"});
   cache_.add_order(order_t{"Order2", "Security1", "Sell", 300, "User2", "CompanyB"});
@@ -363,7 +379,7 @@ TEST_F(order_cache_test_t, matching_follows_cancellations)
   EXPECT_EQ(cache_.get_matching_size_for_security("Security1"), 0u);
 }
 
-TEST_F(order_cache_test_t, matching_saturates_instead_of_overflowing)
+TEST_F(matching_test_t, matching_saturates_instead_of_overflowing)
 {
   const unsigned int maximum = std::numeric_limits<unsigned int>::max();
   cache_.add_order(order_t{"Order1", "Security1", "Buy", maximum, "User1", "CompanyA"});
