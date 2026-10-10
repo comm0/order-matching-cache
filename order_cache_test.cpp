@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -6,6 +7,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -97,6 +99,10 @@ class performance_test_t : public order_cache_test_t
 {
 };
 
+class concurrency_test_t : public order_cache_test_t
+{
+};
+
 template <typename callable_t>
 std::chrono::milliseconds time_phase(const std::string& phase_name_p, callable_t&& callable_p)
 {
@@ -106,6 +112,19 @@ std::chrono::milliseconds time_phase(const std::string& phase_name_p, callable_t
       std::chrono::steady_clock::now() - start);
   std::cout << phase_name_p << ": " << elapsed.count() << " ms\n";
   return elapsed;
+}
+
+template <typename callable_t>
+void run_in_parallel(std::size_t thread_count_p, callable_t&& callable_p)
+{
+  std::vector<std::thread> threads;
+  threads.reserve(thread_count_p);
+  for (std::size_t thread_index = 0; thread_index < thread_count_p; ++thread_index) {
+    threads.emplace_back(callable_p, thread_index);
+  }
+  for (std::thread& thread : threads) {
+    thread.join();
+  }
 }
 
 struct invalid_order_case_t
@@ -467,6 +486,125 @@ void expect_matching_equals_reference(
     const unsigned int expected = expected_iterator == expected_matching.end() ? 0 : expected_iterator->second;
     EXPECT_EQ(cache_p.get_matching_size_for_security(security_id), expected) << security_id;
   }
+}
+
+TEST_F(concurrency_test_t, concurrent_adds_and_reads_preserve_all_orders)
+{
+  constexpr std::size_t thread_count = 8;
+  constexpr std::size_t orders_per_thread = 2000;
+  constexpr std::size_t security_count = 16;
+
+  std::vector<std::string> security_ids;
+  security_ids.reserve(security_count);
+  for (std::size_t index = 0; index < security_count; ++index) {
+    security_ids.push_back("ConcurrentSecurity" + std::to_string(index));
+  }
+
+  run_in_parallel(thread_count, [&](std::size_t thread_index_p) {
+    for (std::size_t order_index = 0; order_index < orders_per_thread; ++order_index) {
+      const std::size_t global_index = thread_index_p * orders_per_thread + order_index;
+      cache_.add_order(order_t{
+          "ConcurrentOrder" + std::to_string(global_index),
+          security_ids[global_index % security_count],
+          global_index % 2 == 0 ? "Buy" : "Sell",
+          static_cast<unsigned int>(global_index % 1000 + 1),
+          "ConcurrentUser" + std::to_string(global_index % 64),
+          "ConcurrentCompany" + std::to_string(global_index % 11)});
+
+      if (order_index % 128 == 0) {
+        cache_.get_matching_size_for_security(security_ids[global_index % security_count]);
+        cache_.get_all_orders();
+      }
+    }
+  });
+
+  const std::vector<order_t> all_orders = cache_.get_all_orders();
+  ASSERT_EQ(all_orders.size(), thread_count * orders_per_thread);
+  expect_matching_equals_reference(cache_, security_ids, all_orders);
+}
+
+TEST_F(concurrency_test_t, concurrent_add_and_cancel_leaves_exact_expected_orders)
+{
+  constexpr std::size_t thread_count = 8;
+  constexpr std::size_t orders_per_thread = 1200;
+  constexpr unsigned int minimum_quantity = 80;
+
+  std::vector<std::string> security_ids;
+  security_ids.reserve(thread_count);
+  for (std::size_t thread_index = 0; thread_index < thread_count; ++thread_index) {
+    security_ids.push_back("MixedSecurity" + std::to_string(thread_index));
+  }
+
+  const auto make_order = [&](std::size_t thread_index_p, std::size_t order_index_p) {
+    const std::string thread_suffix = std::to_string(thread_index_p);
+    return order_t{
+        "MixedOrder" + thread_suffix + "_" + std::to_string(order_index_p),
+        security_ids[thread_index_p],
+        order_index_p % 2 == 0 ? "Buy" : "Sell",
+        static_cast<unsigned int>(order_index_p % 100 + 1),
+        (order_index_p % 5 == 0 ? "CancelledUser" : "KeptUser") + thread_suffix,
+        "MixedCompany" + std::to_string(order_index_p % 7)};
+  };
+
+  const auto is_kept = [&](std::size_t order_index_p) {
+    return order_index_p % 7 != 0 && order_index_p % 5 != 0 && order_index_p % 100 + 1 < minimum_quantity;
+  };
+
+  run_in_parallel(thread_count, [&](std::size_t thread_index_p) {
+    for (std::size_t order_index = 0; order_index < orders_per_thread; ++order_index) {
+      cache_.add_order(make_order(thread_index_p, order_index));
+    }
+    for (std::size_t order_index = 0; order_index < orders_per_thread; order_index += 7) {
+      cache_.cancel_order(make_order(thread_index_p, order_index).order_id());
+    }
+    cache_.cancel_orders_for_user("CancelledUser" + std::to_string(thread_index_p));
+    cache_.cancel_orders_for_security_with_minimum_quantity(security_ids[thread_index_p], minimum_quantity);
+  });
+
+  std::vector<order_t> expected_orders;
+  for (std::size_t thread_index = 0; thread_index < thread_count; ++thread_index) {
+    for (std::size_t order_index = 0; order_index < orders_per_thread; ++order_index) {
+      if (is_kept(order_index)) {
+        expected_orders.push_back(make_order(thread_index, order_index));
+      }
+    }
+  }
+
+  const std::vector<order_t> actual_orders = cache_.get_all_orders();
+  expect_orders_equal(actual_orders, expected_orders);
+  expect_matching_equals_reference(cache_, security_ids, actual_orders);
+}
+
+TEST_F(concurrency_test_t, concurrent_duplicate_id_allows_exactly_one_add)
+{
+  constexpr std::size_t thread_count = 8;
+  std::atomic<std::size_t> successful_adds{0};
+  std::atomic<std::size_t> invalid_adds{0};
+  std::atomic<std::size_t> unexpected_failures{0};
+
+  run_in_parallel(thread_count, [&](std::size_t thread_index_p) {
+    try {
+      cache_.add_order(order_t{
+          "SharedOrder",
+          "SharedSecurity",
+          thread_index_p % 2 == 0 ? "Buy" : "Sell",
+          static_cast<unsigned int>(thread_index_p + 1),
+          "SharedUser" + std::to_string(thread_index_p),
+          "SharedCompany" + std::to_string(thread_index_p)});
+      successful_adds.fetch_add(1, std::memory_order_relaxed);
+    } catch (const std::invalid_argument&) {
+      invalid_adds.fetch_add(1, std::memory_order_relaxed);
+    } catch (...) {
+      unexpected_failures.fetch_add(1, std::memory_order_relaxed);
+    }
+  });
+
+  EXPECT_EQ(successful_adds.load(std::memory_order_relaxed), 1u);
+  EXPECT_EQ(invalid_adds.load(std::memory_order_relaxed), thread_count - 1);
+  EXPECT_EQ(unexpected_failures.load(std::memory_order_relaxed), 0u);
+  const std::vector<order_t> orders = cache_.get_all_orders();
+  ASSERT_EQ(orders.size(), 1u);
+  EXPECT_EQ(orders.front().order_id(), "SharedOrder");
 }
 
 TEST_F(performance_test_t, handles_one_million_orders_efficiently)

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <set>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -170,4 +171,5 @@ class order_cache_t : public order_cache_interface_t
   std::unordered_map<std::string, order_t> orders_;
   id_index_t<std::string> user_index_;
   std::unordered_map<std::string, security_book_t> securities_;
+  mutable std::shared_mutex mutex_;
 };
