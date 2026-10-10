@@ -1,6 +1,11 @@
 #pragma once
 
+#include <cstdint>
+#include <set>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 class order_t
@@ -84,4 +89,85 @@ class order_cache_t : public order_cache_interface_t
 
  private:
 
+  template <typename key_t>
+  class id_index_t
+  {
+   public:
+    void add(const key_t& key_p, const std::string& order_id_p)
+    {
+      index_[key_p].insert(order_id_p);
+    }
+
+    void remove(const key_t& key_p, const std::string& order_id_p)
+    {
+      auto key_iterator = index_.find(key_p);
+      if (key_iterator == index_.end()) {
+        return;
+      }
+
+      key_iterator->second.erase(order_id_p);
+      if (key_iterator->second.empty()) {
+        index_.erase(key_iterator);
+      }
+    }
+
+    const std::unordered_set<std::string>* find(const key_t& key_p) const
+    {
+      auto key_iterator = index_.find(key_p);
+      if (key_iterator == index_.end()) {
+        return nullptr;
+      }
+      return &key_iterator->second;
+    }
+
+   private:
+    std::unordered_map<key_t, std::unordered_set<std::string>> index_;
+  };
+
+  struct company_volume_t
+  {
+    std::uint64_t buy_ = 0;
+    std::uint64_t sell_ = 0;
+  };
+
+  struct security_book_t
+  {
+    std::uint64_t buy_total_ = 0;
+    std::uint64_t sell_total_ = 0;
+    std::unordered_map<std::string, company_volume_t> companies_;
+    std::multiset<std::uint64_t> company_totals_;
+    std::set<std::pair<unsigned int, std::string>> orders_by_qty_;
+  };
+
+  enum class side_t
+  {
+    buy,
+    sell
+  };
+
+  enum class volume_change_t
+  {
+    add,
+    remove
+  };
+
+  static side_t parse_side(const std::string& side_p);
+
+  static void apply_change(
+      std::uint64_t& value_p,
+      std::uint64_t quantity_p,
+      volume_change_t change_p);
+
+  static void change_volume(
+      security_book_t& security_book_p,
+      const std::string& company_p,
+      side_t side_p,
+      std::uint64_t quantity_p,
+      volume_change_t change_p);
+
+  void remove_order(const std::string& order_id_p);
+
+  std::unordered_map<std::string, order_t> orders_;
+  id_index_t<std::string> user_index_;
+  std::unordered_map<std::string, security_book_t> securities_;
 };
