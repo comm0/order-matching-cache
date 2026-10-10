@@ -1,4 +1,9 @@
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <iostream>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -87,6 +92,21 @@ class cancellation_test_t : public order_cache_test_t
 class matching_test_t : public order_cache_test_t
 {
 };
+
+class performance_test_t : public order_cache_test_t
+{
+};
+
+template <typename callable_t>
+std::chrono::milliseconds time_phase(const std::string& phase_name_p, callable_t&& callable_p)
+{
+  const auto start = std::chrono::steady_clock::now();
+  std::forward<callable_t>(callable_p)();
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start);
+  std::cout << phase_name_p << ": " << elapsed.count() << " ms\n";
+  return elapsed;
+}
 
 struct invalid_order_case_t
 {
@@ -388,6 +408,177 @@ TEST_F(matching_test_t, matching_saturates_instead_of_overflowing)
   cache_.add_order(order_t{"Order4", "Security1", "Sell", maximum, "User4", "CompanyD"});
 
   EXPECT_EQ(cache_.get_matching_size_for_security("Security1"), maximum);
+}
+
+struct matching_reference_t
+{
+  std::uint64_t buy_total_ = 0;
+  std::uint64_t sell_total_ = 0;
+  std::unordered_map<std::string, std::uint64_t> company_totals_;
+};
+
+std::unordered_map<std::string, unsigned int> calculate_reference_matching(
+    const std::vector<order_t>& orders_p)
+{
+  std::unordered_map<std::string, matching_reference_t> references;
+  for (const order_t& order : orders_p) {
+    const std::string security_id = order.security_id();
+    const std::string side = order.side();
+    const unsigned int quantity = order.quantity();
+    const std::string company = order.company();
+
+    matching_reference_t& reference = references[security_id];
+    if (side == "Buy") {
+      reference.buy_total_ += quantity;
+    } else {
+      reference.sell_total_ += quantity;
+    }
+    reference.company_totals_[company] += quantity;
+  }
+
+  std::unordered_map<std::string, unsigned int> matching_by_security;
+  matching_by_security.reserve(references.size());
+  for (const auto& [security_id, reference] : references) {
+    std::uint64_t largest_company_total = 0;
+    for (const auto& company_entry : reference.company_totals_) {
+      largest_company_total = std::max(largest_company_total, company_entry.second);
+    }
+
+    const std::uint64_t matched = std::min({
+        reference.buy_total_,
+        reference.sell_total_,
+        reference.buy_total_ + reference.sell_total_ - largest_company_total});
+    matching_by_security.emplace(
+        security_id,
+        static_cast<unsigned int>(
+            std::min<std::uint64_t>(matched, std::numeric_limits<unsigned int>::max())));
+  }
+  return matching_by_security;
+}
+
+void expect_matching_equals_reference(
+    order_cache_t& cache_p,
+    const std::vector<std::string>& security_ids_p,
+    const std::vector<order_t>& orders_p)
+{
+  const auto expected_matching = calculate_reference_matching(orders_p);
+  for (const std::string& security_id : security_ids_p) {
+    const auto expected_iterator = expected_matching.find(security_id);
+    const unsigned int expected = expected_iterator == expected_matching.end() ? 0 : expected_iterator->second;
+    EXPECT_EQ(cache_p.get_matching_size_for_security(security_id), expected) << security_id;
+  }
+}
+
+TEST_F(performance_test_t, handles_one_million_orders_efficiently)
+{
+  constexpr std::size_t order_count = 1000000;
+  constexpr std::size_t security_count = 1000;
+  constexpr std::size_t company_count = 100;
+  constexpr std::size_t user_count = 10000;
+  constexpr std::size_t users_to_cancel = 1000;
+  constexpr unsigned int minimum_quantity = 5000;
+
+  std::vector<std::string> security_ids;
+  security_ids.reserve(security_count);
+  for (std::size_t index = 0; index < security_count; ++index) {
+    security_ids.push_back("Security" + std::to_string(index));
+  }
+
+  std::vector<std::string> companies;
+  companies.reserve(company_count);
+  for (std::size_t index = 0; index < company_count; ++index) {
+    companies.push_back("Company" + std::to_string(index));
+  }
+
+  std::vector<std::string> users;
+  users.reserve(user_count);
+  for (std::size_t index = 0; index < user_count; ++index) {
+    users.push_back("User" + std::to_string(index));
+  }
+
+  std::mt19937 random_engine(1729);
+  std::uniform_int_distribution<std::size_t> security_distribution(0, security_count - 1);
+  std::uniform_int_distribution<std::size_t> company_distribution(0, company_count - 1);
+  std::uniform_int_distribution<std::size_t> user_distribution(0, user_count - 1);
+  std::uniform_int_distribution<unsigned int> quantity_distribution(1, 10000);
+  std::uniform_int_distribution<int> side_distribution(0, 1);
+
+  std::vector<order_t> orders;
+  orders.reserve(order_count);
+  for (std::size_t index = 0; index < order_count; ++index) {
+    orders.emplace_back(
+        "Order" + std::to_string(index),
+        security_ids[security_distribution(random_engine)],
+        side_distribution(random_engine) == 0 ? "Buy" : "Sell",
+        quantity_distribution(random_engine),
+        users[user_distribution(random_engine)],
+        companies[company_distribution(random_engine)]);
+  }
+
+  [[maybe_unused]] const auto measured_test_start = std::chrono::steady_clock::now();
+
+  time_phase("add all orders", [&] {
+    for (const order_t& order : orders) {
+      cache_.add_order(order);
+    }
+  });
+
+  std::vector<unsigned int> actual_matching(security_count);
+  time_phase("getMatchingSizeForSecurity for every security", [&] {
+    for (std::size_t index = 0; index < security_count; ++index) {
+      actual_matching[index] = cache_.get_matching_size_for_security(security_ids[index]);
+    }
+  });
+
+  std::vector<order_t> all_orders;
+  time_phase("getAllOrders", [&] {
+    all_orders = cache_.get_all_orders();
+  });
+  ASSERT_EQ(all_orders.size(), order_count);
+
+  const auto expected_matching = calculate_reference_matching(all_orders);
+  for (std::size_t index = 0; index < security_count; ++index) {
+    EXPECT_EQ(actual_matching[index], expected_matching.at(security_ids[index])) << security_ids[index];
+  }
+
+  orders.clear();
+  orders.shrink_to_fit();
+  all_orders.clear();
+  all_orders.shrink_to_fit();
+
+  time_phase("cancelOrdersForUser for 1000 users", [&] {
+    for (std::size_t index = 0; index < users_to_cancel; ++index) {
+      cache_.cancel_orders_for_user(users[index]);
+    }
+  });
+
+  time_phase("cancelOrdersForSecIdWithMinimumQty for every security", [&] {
+    for (const std::string& security_id : security_ids) {
+      cache_.cancel_orders_for_security_with_minimum_quantity(security_id, minimum_quantity);
+    }
+  });
+
+  const std::vector<order_t> remaining_orders = cache_.get_all_orders();
+  expect_matching_equals_reference(cache_, security_ids, remaining_orders);
+  std::vector<std::string> remaining_order_ids;
+  remaining_order_ids.reserve(remaining_orders.size());
+  for (const order_t& order : remaining_orders) {
+    remaining_order_ids.push_back(order.order_id());
+  }
+
+  time_phase("cancelOrder for every remaining order", [&] {
+    for (const std::string& order_id : remaining_order_ids) {
+      cache_.cancel_order(order_id);
+    }
+  });
+
+  EXPECT_TRUE(cache_.get_all_orders().empty());
+
+#ifdef NDEBUG
+  const auto measured_test_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - measured_test_start);
+  EXPECT_LT(measured_test_elapsed, std::chrono::seconds(30));
+#endif
 }
 
 }

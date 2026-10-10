@@ -1,7 +1,6 @@
 #include "order_cache.h"
 
 #include <algorithm>
-#include <iterator>
 #include <limits>
 #include <stdexcept>
 
@@ -72,8 +71,7 @@ void order_cache_t::cancel_orders_for_security_with_minimum_quantity(
       std::make_pair(minimum_quantity_p, std::string{}));
 
   std::vector<std::string> order_ids_to_remove;
-  order_ids_to_remove.reserve(
-      static_cast<std::size_t>(std::distance(first_order, security_iterator->second.orders_by_qty_.end())));
+  order_ids_to_remove.reserve(security_iterator->second.orders_by_qty_.size());
 
   for (auto order_iterator = first_order;
        order_iterator != security_iterator->second.orders_by_qty_.end();
@@ -175,7 +173,7 @@ void order_cache_t::remove_order(const std::string& order_id_p)
     return;
   }
 
-  const std::string order_id = order_iterator->second.order_id();
+  const std::string& order_id = order_iterator->first;
   const std::string security_id = order_iterator->second.security_id();
   const std::string side = order_iterator->second.side();
   const unsigned int quantity = order_iterator->second.quantity();

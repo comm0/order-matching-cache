@@ -79,4 +79,4 @@ jobs:
         env:
           UBSAN_OPTIONS: print_stacktrace=1
           TSAN_OPTIONS: halt_on_error=1
-        run: ctest --test-dir build --output-on-failure
+        run: ./build/order_cache_test --gtest_filter=-performance_test_t.*
